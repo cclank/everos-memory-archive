@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Local configuration
+.env
+.env.*
+configs/local.toml
+configs/*.local.toml
+
+# Local archive outputs and databases
+.everos/
+agent_memory_archive/
+compiled/
+sources/
+records/
+unified_index/
+*.sqlite
+*.sqlite3
+*.db
+*.db-*
+
+# Raw agent memory/session material must stay out of the code repo.
+.claude/
+.codex/
+memories/
+memory/
+rollout_summaries/
+raw_memories.md
+memory_summary.md
+MEMORY.md
+*.jsonl
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/

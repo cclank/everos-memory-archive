@@ -1,0 +1,12 @@
+[sources]
+claude_code_root = "~/.claude"
+codex_memory_root = "~/.codex/memories"
+repo_roots = ["~/code"]
+
+[everos]
+output_root = "~/.everos/agent_memory_archive"
+user_id = "local-user"
+
+[everos.agents]
+claude_code = "claude-code"
+codex = "codex"
