@@ -1,103 +1,137 @@
 # everos-memory-archive
 
-`everos-memory-archive` is a read-only importer for backing up local Codex and Claude Code memories into an EverOS-style archive.
+![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white)
+![License MIT](https://img.shields.io/badge/license-MIT-2EA44F)
+![Status Alpha](https://img.shields.io/badge/status-alpha-F59E0B)
+![Storage Markdown + SQLite](https://img.shields.io/badge/storage-Markdown%20%2B%20SQLite-4B5563)
+![Read Only Sources](https://img.shields.io/badge/source%20mode-read--only-0F766E)
 
-It never writes to:
+One-click local backup for Codex and Claude Code memories.
 
-- `~/.claude`
-- `~/.codex`
-- `~/.codex/memories`
+`everos-memory-archive` collects local Codex and Claude Code memory files into a readable, deduplicated, traceable, EverOS-style archive. It keeps the original tools untouched, stores redacted Markdown snapshots, writes a SQLite manifest for incremental sync, and compiles a local Memory Pack that future agents can read.
 
-It only reads those directories and writes archive output under:
+## Why This Exists
+
+Agent memory quickly becomes valuable working capital: user preferences, project commands, repo-specific lessons, repeated workflows, writing rules, debugging history, and tool-specific skills.
+
+Codex and Claude Code store useful memory locally, but their complete memory generation, ranking, and injection behavior is controlled by closed-source products. This tool gives you a vendor-neutral local copy that stays readable and portable.
+
+## One-Click Usage
+
+From the repository:
+
+```bash
+scripts/backup-agent-memories.sh
+```
+
+Equivalent module form:
+
+```bash
+python3 -m archive_memory backup
+```
+
+After installation:
+
+```bash
+everos-memory-archive backup
+```
+
+That single command does the full flow:
 
 ```text
-~/.everos/agent_memory_archive/
+scan -> incremental sync -> redaction -> hash/version snapshots -> SQLite manifest -> compile Memory Pack -> verify
 ```
 
-## Commands
+Expected success signal:
 
-Run from this repository:
+```text
+One-click memory backup complete.
+Verification: OK
+Archive root: ~/.everos/agent_memory_archive
+```
+
+## Install
+
+For local development:
 
 ```bash
-cd /path/to/everos-memory-archive
-
-# Write a local config file.
-python -m archive_memory.cli init-config --path configs/local.toml
-
-# Preview what will be collected.
-python -m archive_memory.cli scan --dry-run
-
-# Import changed memories.
-python -m archive_memory.cli import --source claude,codex --incremental
-
-# Daily sync: import changes, keep immutable source versions, then verify.
-python -m archive_memory.cli sync --source claude,codex
-
-# Compile archived records into a local Memory Pack.
-python -m archive_memory.cli compile
-
-# Search archived records.
-python -m archive_memory.cli search "EverOS memory"
-
-# Show archive statistics.
-python -m archive_memory.cli stats
-
-# Verify archive integrity and safety.
-python -m archive_memory.cli verify
-
-# Show latest import report.
-python -m archive_memory.cli report --latest
-
-# Show one archived record.
-python -m archive_memory.cli show --id <archive_id>
+git clone <your-fork-or-repo-url>
+cd everos-memory-archive
+python3 -m pip install -e .
+everos-memory-archive backup
 ```
 
-After packaging or publishing, the same commands are available as:
-
-```bash
-everos-memory-archive scan --dry-run
-everos-memory-archive sync --source claude,codex
-everos-memory-archive compile
-everos-memory-archive verify
-```
+No runtime dependencies are required beyond Python 3.9+.
 
 ## Codex Skill
 
-An optional local Codex skill can be installed for this workflow:
+If you use Codex, pair this repo with a local skill and trigger it in one sentence:
 
 ```text
-~/.codex/skills/archive-agent-memories/SKILL.md
+Use $archive-agent-memories to back up my Codex and Claude Code memories.
 ```
 
-Use it in a future Codex thread with:
+The skill should run:
+
+```bash
+cd /path/to/everos-memory-archive
+scripts/backup-agent-memories.sh
+```
+
+The public skill template is included at:
 
 ```text
-Use $archive-agent-memories to sync and verify my local Codex and Claude Code memory archive.
+skills/archive-agent-memories/SKILL.md
 ```
+
+Install it into Codex by copying that folder to:
+
+```text
+~/.codex/skills/archive-agent-memories/
+```
+
+## What It Collects
+
+Default source roots:
+
+```text
+~/.claude
+~/.codex/memories
+```
+
+The collectors use explicit allowlists. They include readable memory files such as:
+
+| Source | Collected examples |
+|---|---|
+| Codex | `memory_summary.md`, `MEMORY.md`, `raw_memories.md`, `rollout_summaries/*.md`, `skills/*/SKILL.md`, `extensions/ad_hoc/notes/*.md` |
+| Claude Code | `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `.claude/skills/**/SKILL.md`, `.claude/rules/*.md`, project memory topics |
+
+It intentionally skips raw sessions, cache folders, shell snapshots, credentials, telemetry, task state, file history, and JSONL conversation logs.
 
 ## Output Layout
+
+Default archive root:
 
 ```text
 ~/.everos/agent_memory_archive/
   claude_code/
     sources/
-      memory.md
-      memory.md.versions/
-        <sha256>.md
+      <redacted latest snapshots>
+      <name>.versions/<sha256>.md
     records/
       user/<user_id>/
       agents/claude-code/
   codex/
     sources/
-      memory_summary.md
-      memory_summary.md.versions/
-        <sha256>.md
+      <redacted latest snapshots>
+      <name>.versions/<sha256>.md
     records/
       user/<user_id>/
       agents/codex/
   unified_index/
     manifest.sqlite
     reports/
+      latest.json
   compiled/
     README.md
     memory_map.md
@@ -109,53 +143,152 @@ Use $archive-agent-memories to sync and verify my local Codex and Claude Code me
     bootstrap_context.md
 ```
 
-`claude_code/` and `codex/` store source-specific redacted snapshots and normalized Markdown cards. With `sync` or `import --keep-versions`, each changed source snapshot is also stored under `*.versions/<sha256>.md`, while the direct file path remains the latest readable copy. `unified_index/manifest.sqlite` stores hashes, versions, paths, and import status for cross-source search and verification.
+The archive separates source-specific snapshots from normalized Markdown records:
 
-## Memory Pack Compile
+| Layer | Purpose |
+|---|---|
+| `sources/` | Redacted source snapshots, readable as plain Markdown |
+| `*.versions/<sha256>.md` | Immutable version snapshots for changed source files |
+| `records/` | Normalized Markdown memory cards grouped by user or agent |
+| `manifest.sqlite` | Hashes, source paths, owner/type metadata, import status, and audit state |
+| `compiled/` | Deterministic Memory Pack for agent bootstrap and manual review |
 
-`compile` builds a deterministic local Memory Pack from archived records:
+## Memory Pack
+
+`backup` runs `compile` by default. You can also run it directly:
 
 ```bash
-python -m archive_memory.cli compile
+everos-memory-archive compile
 ```
 
-It writes:
+Generated files:
 
-- `user_preferences.md`: likely user preferences and standing instructions
-- `agent_skills.md`: reusable workflows, runbooks, and skills
-- `project_cases.md`: project-centered experience and context
-- `bootstrap_context.md`: compact context pack for new agents
-- `memory_map.md`, `recent_changes.md`, `conflicts.md`: audit and navigation files
+| File | Use |
+|---|---|
+| `bootstrap_context.md` | Compact startup context for a new agent |
+| `user_preferences.md` | Likely user preferences and standing instructions |
+| `agent_skills.md` | Reusable workflows, runbooks, and tool skills |
+| `project_cases.md` | Project-centered experience grouped by inferred project |
+| `memory_map.md` | Source, owner, type, and project index |
+| `recent_changes.md` | Latest imports and latest source updates |
+| `conflicts.md` | Local-rule candidates for stale, duplicate, or conflicting memories |
 
-V1 is local and rules-based. It does not call an LLM or any remote API.
+The current compiler is deterministic and local. It does not call an LLM or remote API.
+
+## Commands
+
+```bash
+# One-click default.
+scripts/backup-agent-memories.sh
+
+# Same flow through the installed CLI.
+everos-memory-archive backup
+
+# Preview source files without writing.
+everos-memory-archive scan --dry-run
+
+# Incremental archive sync only.
+everos-memory-archive sync --source claude,codex
+
+# Compile the Memory Pack.
+everos-memory-archive compile
+
+# Verify archive integrity and secret redaction.
+everos-memory-archive verify
+
+# Search archived records with keyword search.
+everos-memory-archive search "local code first"
+
+# Show import counts.
+everos-memory-archive stats
+
+# Show latest sync report.
+everos-memory-archive report --latest
+```
+
+## Configuration
+
+Generate a local config:
+
+```bash
+everos-memory-archive init-config --path configs/local.toml
+```
+
+Example:
+
+```toml
+[sources]
+claude_code_root = "~/.claude"
+codex_memory_root = "~/.codex/memories"
+repo_roots = ["~/code"]
+
+[everos]
+output_root = "~/.everos/agent_memory_archive"
+user_id = "local-user"
+
+[everos.agents]
+claude_code = "claude-code"
+codex = "codex"
+```
+
+Use it with:
+
+```bash
+everos-memory-archive --config configs/local.toml backup
+```
 
 ## Incremental Sync
 
-`sync` is the recommended daily command:
+`backup` and `sync` both use SHA-256 based incremental state:
+
+| State | Meaning |
+|---|---|
+| `added` | Newly discovered source memory file |
+| `changed` | Same source path, new content hash |
+| `moved` | Same content hash appears at a different source path |
+| `versioned` | Already-imported content needs an immutable snapshot backfill |
+| `skipped` | Source path and hash are already archived |
+| `missing` | Previously imported source path is no longer visible |
+| `failed` | Import or write failed |
+
+## Security Model
+
+Security goals:
+
+- Treat Codex and Claude Code source roots as read-only.
+- Keep archive writes under `output_root`.
+- Preserve source paths for audit and provenance.
+- Redact common secrets before writing snapshots, records, and metadata.
+- Reject source symlink escapes.
+- Reject archive output symlink writes.
+- Validate manifest paths before `search` and `compile` read records.
+- Verify that archived records and snapshots stay under the archive root.
+
+Current redaction covers common assignment forms, JSON-style secrets, OpenAI and Anthropic keys, GitHub tokens, AWS access keys, Bearer tokens, and PEM private key blocks. Redaction is a safety layer, not a substitute for reviewing sensitive local data before publishing or sharing an archive.
+
+Run verification any time:
 
 ```bash
-python -m archive_memory.cli sync --source claude,codex
+everos-memory-archive verify
 ```
 
-It reports:
-
-- `added`: newly discovered source memory files
-- `changed`: same source path with new content hash
-- `moved`: same content hash found at a different path
-- `versioned`: already-imported content that needs immutable snapshot backfill
-- `skipped`: unchanged source files
-- `missing`: previously imported source paths that are no longer visible
-
-Manual imports can also keep immutable snapshots:
+## Development
 
 ```bash
-python -m archive_memory.cli import --source claude,codex --incremental --keep-versions
+python3 -m compileall archive_memory tests
+python3 -m unittest discover -s tests -v
+python3 -m archive_memory backup
+python3 -m archive_memory verify
 ```
 
-## Safety
+The test suite includes regression coverage for:
 
-The importer uses explicit allowlists. It does not scan raw Claude/Codex sessions, credentials, cache folders, shell snapshots, file history, or environment dumps.
+- common secret formats and metadata redaction
+- source symlink escape prevention
+- output symlink overwrite prevention
+- manifest path trust in `search` and `compile`
+- one-click `backup`
 
-Secrets are redacted before snapshots and cards are written.
+## License
 
-`verify` checks that every archived snapshot and record exists, remains under the archive root, and is not written inside protected Claude/Codex source roots.
+MIT. See [LICENSE](LICENSE).

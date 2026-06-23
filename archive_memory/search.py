@@ -5,7 +5,7 @@ from pathlib import Path
 
 from archive_memory.config import ArchiveConfig
 from archive_memory.manifest import Manifest
-from archive_memory.utils import read_text_lossy
+from archive_memory.utils import read_text_lossy, resolve_existing_archive_file
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,9 @@ def search_archive(
     if not terms:
         return []
 
-    manifest = Manifest(config.manifest_path)
+    if not config.manifest_path.exists():
+        return []
+    manifest = Manifest(config.manifest_path, create=False)
     hits: list[SearchHit] = []
     for row in manifest.iter_rows():
         if source and row["source_system"] != source:
@@ -44,9 +46,15 @@ def search_archive(
         if memory_type and row["memory_type"] != memory_type:
             continue
 
-        path = Path(row["record_path"])
-        if not path.exists():
+        raw_path = Path(row["record_path"])
+        if not raw_path.exists():
             continue
+        path = resolve_existing_archive_file(
+            raw_path,
+            config.output_root,
+            config.protected_roots,
+            context="record_path",
+        )
         text = read_text_lossy(path)
         display_text = _display_text(text)
         haystack = "\n".join(

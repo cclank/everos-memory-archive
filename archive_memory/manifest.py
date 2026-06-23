@@ -34,11 +34,14 @@ create index if not exists idx_imports_imported_at on imports(imported_at);
 
 
 class Manifest:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, create: bool = True) -> None:
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.connect() as conn:
-            conn.executescript(SCHEMA)
+        if self.path.is_symlink():
+            raise RuntimeError(f"manifest path must not be a symlink: {self.path}")
+        if create:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.connect() as conn:
+                conn.executescript(SCHEMA)
 
     def connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path)

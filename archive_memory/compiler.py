@@ -7,7 +7,13 @@ from pathlib import Path
 
 from archive_memory.config import ArchiveConfig
 from archive_memory.manifest import Manifest
-from archive_memory.utils import read_text_lossy, utc_iso
+from archive_memory.utils import (
+    ensure_safe_output_path,
+    read_text_lossy,
+    resolve_existing_archive_file,
+    safe_write_text,
+    utc_iso,
+)
 
 
 @dataclass(frozen=True)
@@ -82,20 +88,20 @@ def compile_archive(
     max_items_per_section: int = 40,
     bootstrap_limit: int = 24,
 ) -> CompileResult:
+    ensure_safe_output_path(config.manifest_path, config.output_root, config.protected_roots, context="manifest path")
     manifest = Manifest(config.manifest_path)
     items = load_compiled_items(config, manifest)
     output_dir = config.output_root / "compiled"
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     files = [
-        write_file(output_dir / "README.md", render_readme(config, items)),
-        write_file(output_dir / "memory_map.md", render_memory_map(config, items, max_items_per_section)),
-        write_file(output_dir / "recent_changes.md", render_recent_changes(config, items, max_items_per_section)),
-        write_file(output_dir / "user_preferences.md", render_user_preferences(config, items, max_items_per_section)),
-        write_file(output_dir / "agent_skills.md", render_agent_skills(config, items, max_items_per_section)),
-        write_file(output_dir / "project_cases.md", render_project_cases(config, items, max_items_per_section)),
-        write_file(output_dir / "conflicts.md", render_conflicts(config, items, max_items_per_section)),
-        write_file(output_dir / "bootstrap_context.md", render_bootstrap_context(config, items, bootstrap_limit)),
+        write_file(config, output_dir / "README.md", render_readme(config, items)),
+        write_file(config, output_dir / "memory_map.md", render_memory_map(config, items, max_items_per_section)),
+        write_file(config, output_dir / "recent_changes.md", render_recent_changes(config, items, max_items_per_section)),
+        write_file(config, output_dir / "user_preferences.md", render_user_preferences(config, items, max_items_per_section)),
+        write_file(config, output_dir / "agent_skills.md", render_agent_skills(config, items, max_items_per_section)),
+        write_file(config, output_dir / "project_cases.md", render_project_cases(config, items, max_items_per_section)),
+        write_file(config, output_dir / "conflicts.md", render_conflicts(config, items, max_items_per_section)),
+        write_file(config, output_dir / "bootstrap_context.md", render_bootstrap_context(config, items, bootstrap_limit)),
     ]
     return CompileResult(output_dir=output_dir, files=files, item_count=len(items))
 
@@ -105,9 +111,22 @@ def load_compiled_items(config: ArchiveConfig, manifest: Manifest) -> list[Compi
     for row in manifest.iter_rows():
         if row["status"] != "imported":
             continue
-        record_path = Path(row["record_path"])
-        if not record_path.exists():
+        raw_record_path = Path(row["record_path"])
+        raw_snapshot_path = Path(row["snapshot_path"])
+        if not raw_record_path.exists() or not raw_snapshot_path.exists():
             continue
+        record_path = resolve_existing_archive_file(
+            raw_record_path,
+            config.output_root,
+            config.protected_roots,
+            context="record_path",
+        )
+        snapshot_path = resolve_existing_archive_file(
+            raw_snapshot_path,
+            config.output_root,
+            config.protected_roots,
+            context="snapshot_path",
+        )
         text = display_text(read_text_lossy(record_path))
         items.append(
             CompiledItem(
@@ -122,7 +141,7 @@ def load_compiled_items(config: ArchiveConfig, manifest: Manifest) -> list[Compi
                 source_mtime=float(row["source_mtime"]),
                 source_path=Path(row["source_path"]),
                 record_path=record_path,
-                snapshot_path=Path(row["snapshot_path"]),
+                snapshot_path=snapshot_path,
                 text=text,
                 excerpt=make_excerpt(text),
             )
@@ -338,9 +357,14 @@ def render_counter(title: str, counter: Counter, *, limit: int = 40) -> list[str
     return lines
 
 
-def write_file(path: Path, text: str) -> Path:
-    path.write_text(text.rstrip() + "\n", encoding="utf-8")
-    return path
+def write_file(config: ArchiveConfig, path: Path, text: str) -> Path:
+    return safe_write_text(
+        path,
+        text.rstrip() + "\n",
+        config.output_root,
+        config.protected_roots,
+        context="compiled file",
+    )
 
 
 def display_text(record_text: str) -> str:

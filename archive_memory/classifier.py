@@ -6,8 +6,8 @@ from archive_memory.models import Classification, SourceItem
 from archive_memory.utils import read_text_lossy
 
 
-def classify(item: SourceItem, config: ArchiveConfig) -> Classification:
-    text = read_text_lossy(item.source_path)
+def classify(item: SourceItem, config: ArchiveConfig, *, text: str | None = None) -> Classification:
+    text = text if text is not None else read_text_lossy(item.source_path)
     frontmatter, body = parse_frontmatter(text)
     title = _title_from(item, frontmatter, body)
     project_hint = _project_hint(item, frontmatter)

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
+from archive_memory.cli import main as cli_main
 from archive_memory.compiler import compile_archive
 from archive_memory.config import ArchiveConfig, load_config
+from archive_memory.manifest import Manifest
 from archive_memory.redactor import find_secret_indicators, redact_text
 from archive_memory.scanner import scan
 from archive_memory.search import search_archive
@@ -20,6 +23,53 @@ class ArchiveMemoryTests(unittest.TestCase):
         self.assertIn("<redacted>", redacted)
         self.assertNotIn("hunter2", redacted)
         self.assertEqual(find_secret_indicators(redacted), [])
+
+    def test_redacts_common_secret_formats_and_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            codex = root / "codex" / "memories"
+            archive = root / "archive"
+            codex.mkdir(parents=True)
+            source = codex / "memory_summary.md"
+            source.write_text(
+                "\n".join(
+                    [
+                        "api_key = sk-testsecretvalue123456789",
+                        "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz123456",
+                        "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY",
+                        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456",
+                        '{"password": "hunter2"}',
+                        "-----BEGIN PRIVATE KEY-----",
+                        "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
+                        "-----END PRIVATE KEY-----",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            config = ArchiveConfig(
+                claude_root=root / "claude",
+                codex_memory_root=codex,
+                repo_roots=(root / "repos",),
+                output_root=archive,
+                user_id="tester",
+                claude_agent_id="claude-code",
+                codex_agent_id="codex",
+            )
+
+            sink = ArchiveFileSink(config)
+            result = sink.import_items(scan(config, "codex"))[0]
+            self.assertEqual(result.status, "imported", result.error)
+            record = result.record_path.read_text(encoding="utf-8")
+            snapshot = result.snapshot_path.read_text(encoding="utf-8")
+            self.assertNotIn("sk-testsecretvalue123456789", record)
+            self.assertNotIn("ghp_abcdefghijklmnopqrstuvwxyz123456", snapshot)
+            self.assertNotIn("hunter2", record)
+            self.assertNotIn("PRIVATE KEY-----", snapshot)
+            self.assertEqual(find_secret_indicators(record), [])
+            row = Manifest(config.manifest_path).get(result.archive_id)
+            self.assertIsNotNone(row)
+            self.assertNotIn("sk-testsecretvalue123456789", row["title"])
+            self.assertTrue(verify_archive(config).ok)
 
     def test_config_parser(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -194,6 +244,139 @@ codex = "cx"
             self.assertIn("repo-research", (archive / "compiled" / "agent_skills.md").read_text())
             self.assertIn("example-project", (archive / "compiled" / "project_cases.md").read_text())
             self.assertIn("codex__", (archive / "compiled" / "memory_map.md").read_text())
+
+    def test_scanner_rejects_source_symlink_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            codex = root / "codex" / "memories"
+            outside = root / "outside-secret.md"
+            (codex / "rollout_summaries").mkdir(parents=True)
+            outside.write_text("UNIQUE_OUTSIDE_SECRET=plain-local-secret\n", encoding="utf-8")
+            (codex / "rollout_summaries" / "linked.md").symlink_to(outside)
+            config = ArchiveConfig(
+                claude_root=root / "claude",
+                codex_memory_root=codex,
+                repo_roots=(root / "repos",),
+                output_root=root / "archive",
+                user_id="tester",
+                claude_agent_id="claude-code",
+                codex_agent_id="codex",
+            )
+            self.assertEqual(scan(config, "codex"), [])
+
+    def test_archive_rejects_output_symlink_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            codex = root / "codex" / "memories"
+            archive = root / "archive"
+            outside = root / "outside-overwrite.txt"
+            codex.mkdir(parents=True)
+            outside.write_text("keep me\n", encoding="utf-8")
+            source = codex / "memory_summary.md"
+            source.write_text("safe memory\n", encoding="utf-8")
+            config = ArchiveConfig(
+                claude_root=root / "claude",
+                codex_memory_root=codex,
+                repo_roots=(root / "repos",),
+                output_root=archive,
+                user_id="tester",
+                claude_agent_id="claude-code",
+                codex_agent_id="codex",
+            )
+            sink = ArchiveFileSink(config)
+            item = scan(config, "codex")[0]
+            target = sink.latest_snapshot_path(item)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(outside)
+
+            result = sink.import_item(item)
+            self.assertEqual(result.status, "failed")
+            self.assertEqual(outside.read_text(encoding="utf-8"), "keep me\n")
+
+    def test_search_and_compile_reject_manifest_path_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            codex = root / "codex" / "memories"
+            archive = root / "archive"
+            outside = root / "outside-record.md"
+            codex.mkdir(parents=True)
+            outside.write_text("PROJECT_SECRET_TOKEN=topsecret-local-value\n", encoding="utf-8")
+            (codex / "memory_summary.md").write_text("normal memory\n", encoding="utf-8")
+            config = ArchiveConfig(
+                claude_root=root / "claude",
+                codex_memory_root=codex,
+                repo_roots=(root / "repos",),
+                output_root=archive,
+                user_id="tester",
+                claude_agent_id="claude-code",
+                codex_agent_id="codex",
+            )
+            sink = ArchiveFileSink(config)
+            result = sink.import_items(scan(config, "codex"))[0]
+            with sqlite3.connect(config.manifest_path) as conn:
+                conn.execute(
+                    """
+                    insert or replace into imports (
+                      archive_id, source_system, source_kind, source_path, source_hash,
+                      source_mtime, source_size, owner_type, owner_id, memory_type,
+                      project_hint, title, snapshot_path, record_path, imported_at,
+                      status, error
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "evil",
+                        "codex",
+                        "summary",
+                        str(codex / "evil.md"),
+                        "hash",
+                        0.0,
+                        1,
+                        "user",
+                        "tester",
+                        "reference",
+                        "",
+                        "evil",
+                        result.snapshot_path.as_posix(),
+                        outside.as_posix(),
+                        "2026-01-01T00:00:00+00:00",
+                        "imported",
+                        None,
+                    ),
+                )
+            with self.assertRaises(RuntimeError):
+                search_archive(config, "PROJECT_SECRET_TOKEN")
+            with self.assertRaises(RuntimeError):
+                compile_archive(config)
+
+    def test_backup_command_runs_one_click_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            codex = root / "codex" / "memories"
+            archive = root / "archive"
+            config_path = root / "config.toml"
+            codex.mkdir(parents=True)
+            (codex / "memory_summary.md").write_text("User prefers local code first.\n", encoding="utf-8")
+            config_path.write_text(
+                f"""
+[sources]
+claude_code_root = "{root / 'claude'}"
+codex_memory_root = "{codex}"
+repo_roots = ["{root / 'repos'}"]
+
+[everos]
+output_root = "{archive}"
+user_id = "tester"
+
+[everos.agents]
+claude_code = "claude-code"
+codex = "codex"
+""",
+                encoding="utf-8",
+            )
+            code = cli_main(["--config", str(config_path), "backup", "--source", "codex"])
+            self.assertEqual(code, 0)
+            self.assertTrue((archive / "compiled" / "bootstrap_context.md").exists())
+            self.assertTrue(verify_archive(load_config(config_path)).ok)
 
 
 if __name__ == "__main__":

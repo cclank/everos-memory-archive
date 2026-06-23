@@ -40,6 +40,15 @@ def main(argv: list[str] | None = None) -> int:
     sync_p.add_argument("--no-secret-scan", action="store_true", help="Skip redaction verification scan.")
     sync_p.add_argument("--json", action="store_true")
 
+    backup_p = sub.add_parser("backup", help="One-click sync, compile, and verify.")
+    backup_p.add_argument("--source", default="claude,codex", help="all, claude, codex, or comma-separated.")
+    backup_p.add_argument("--limit", type=int, help="Back up at most N scanned items.")
+    backup_p.add_argument("--no-compile", action="store_true", help="Skip Memory Pack compilation.")
+    backup_p.add_argument("--no-secret-scan", action="store_true", help="Skip redaction verification scan.")
+    backup_p.add_argument("--max-items", type=int, default=40, help="Maximum items per compiled section.")
+    backup_p.add_argument("--bootstrap-limit", type=int, default=24, help="Maximum candidates in bootstrap context.")
+    backup_p.add_argument("--json", action="store_true")
+
     compile_p = sub.add_parser("compile", help="Compile archived records into a local Memory Pack.")
     compile_p.add_argument("--max-items", type=int, default=40, help="Maximum items per compiled section.")
     compile_p.add_argument("--bootstrap-limit", type=int, default=24, help="Maximum candidates in bootstrap context.")
@@ -77,6 +86,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_import(args, config)
     if args.command == "sync":
         return cmd_sync(args, config)
+    if args.command == "backup":
+        return cmd_backup(args, config)
     if args.command == "compile":
         return cmd_compile(args, config)
     if args.command == "report":
@@ -137,9 +148,85 @@ def cmd_import(args, config) -> int:
 
 
 def cmd_sync(args, config) -> int:
-    items = scan(config, args.source)
-    selected = items[: args.limit] if args.limit else items
-    sink = ArchiveFileSink(config, keep_versions=args.keep_versions)
+    summary, verification, _ = sync_archive(
+        config,
+        source=args.source,
+        limit=args.limit,
+        keep_versions=args.keep_versions,
+        scan_secrets=not args.no_secret_scan,
+    )
+
+    if args.json:
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+    else:
+        print(f"Scanned: {summary['scanned']}")
+        print(f"Selected: {summary['selected']}")
+        print(f"Processed: {summary['processed']}")
+        for key in ("added", "changed", "moved", "versioned", "skipped", "missing", "failed"):
+            print(f"  {key}: {summary[key]}")
+        print(f"Verification: {'OK' if verification.ok else 'FAILED'}")
+        print(f"Archive root: {config.output_root}")
+    return 0 if verification.ok and summary["failed"] == 0 else 1
+
+
+def cmd_backup(args, config) -> int:
+    summary, verification, report_path = sync_archive(
+        config,
+        source=args.source,
+        limit=args.limit,
+        keep_versions=True,
+        scan_secrets=not args.no_secret_scan,
+    )
+    compile_result = None
+    if not args.no_compile:
+        compile_result = compile_archive(
+            config,
+            max_items_per_section=args.max_items,
+            bootstrap_limit=args.bootstrap_limit,
+        )
+        verification = verify_archive(config, scan_secrets=not args.no_secret_scan)
+
+    payload = {
+        "sync": summary,
+        "verification_ok": verification.ok,
+        "archive_root": config.output_root.as_posix(),
+        "report": report_path.as_posix(),
+        "compiled": None
+        if compile_result is None
+        else {
+            "output_dir": compile_result.output_dir.as_posix(),
+            "item_count": compile_result.item_count,
+            "files": [path.as_posix() for path in compile_result.files],
+        },
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print("One-click memory backup complete.")
+        print(f"Scanned: {summary['scanned']}")
+        print(f"Processed: {summary['processed']}")
+        for key in ("added", "changed", "moved", "versioned", "skipped", "missing", "failed"):
+            print(f"  {key}: {summary[key]}")
+        if compile_result is not None:
+            print(f"Compiled records: {compile_result.item_count}")
+            print(f"Memory Pack: {compile_result.output_dir}")
+        print(f"Verification: {'OK' if verification.ok else 'FAILED'}")
+        print(f"Archive root: {config.output_root}")
+        print(f"Report: {report_path}")
+    return 0 if verification.ok and summary["failed"] == 0 else 1
+
+
+def sync_archive(
+    config,
+    *,
+    source: str,
+    limit: int | None,
+    keep_versions: bool,
+    scan_secrets: bool,
+):
+    items = scan(config, source)
+    selected = items[:limit] if limit else items
+    sink = ArchiveFileSink(config, keep_versions=keep_versions)
     manifest = sink.manifest
 
     states = {item.source_path.as_posix(): sync_state(manifest, sink, item) for item in selected}
@@ -147,12 +234,12 @@ def cmd_sync(args, config) -> int:
     to_import = [item for item in selected if states[item.source_path.as_posix()] != "skipped"]
     results = sink.import_items(to_import, incremental=True, write_report=False)
 
-    source_systems = source_filter_to_systems(args.source)
+    source_systems = source_filter_to_systems(source)
     current_paths = {item.source_path.as_posix() for item in items}
     known_paths = manifest.latest_success_paths(source_systems)
     missing = [row for path, row in known_paths.items() if path not in current_paths]
 
-    verification = verify_archive(config, scan_secrets=not args.no_secret_scan)
+    verification = verify_archive(config, scan_secrets=scan_secrets)
     result_counts = Counter(result.status for result in results)
     summary = {
         "scanned": len(items),
@@ -167,7 +254,7 @@ def cmd_sync(args, config) -> int:
         "failed": result_counts.get("failed", 0),
         "verification_ok": verification.ok,
     }
-    sink.write_report(
+    report_path = sink.write_report(
         results,
         report_name="sync",
         extra={
@@ -187,18 +274,7 @@ def cmd_sync(args, config) -> int:
             ],
         },
     )
-
-    if args.json:
-        print(json.dumps(summary, indent=2, ensure_ascii=False))
-    else:
-        print(f"Scanned: {summary['scanned']}")
-        print(f"Selected: {summary['selected']}")
-        print(f"Processed: {summary['processed']}")
-        for key in ("added", "changed", "moved", "versioned", "skipped", "missing", "failed"):
-            print(f"  {key}: {summary[key]}")
-        print(f"Verification: {'OK' if verification.ok else 'FAILED'}")
-        print(f"Archive root: {config.output_root}")
-    return 0 if verification.ok and summary["failed"] == 0 else 1
+    return summary, verification, report_path
 
 
 def cmd_report(args, config) -> int:

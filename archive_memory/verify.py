@@ -30,18 +30,23 @@ def verify_archive(config: ArchiveConfig, *, scan_secrets: bool = True) -> Verif
 
     if any(is_relative_to(root, protected) for protected in config.protected_roots):
         issues.append(VerificationIssue("error", root.as_posix(), "archive root is inside a protected source root"))
+    if config.manifest_path.is_symlink():
+        issues.append(VerificationIssue("error", config.manifest_path.as_posix(), "manifest path is a symlink"))
 
     if not manifest_path.exists():
         issues.append(VerificationIssue("error", manifest_path.as_posix(), "manifest does not exist"))
         return VerificationResult(False, 0, issues)
 
-    manifest = Manifest(manifest_path)
+    manifest = Manifest(manifest_path, create=False)
     rows = manifest.iter_rows()
     for row in rows:
         for field in ("record_path", "snapshot_path"):
-            path = Path(row[field]).resolve()
-            if not path.exists():
-                issues.append(VerificationIssue("error", path.as_posix(), f"{field} is missing"))
+            raw_path = Path(row[field])
+            if raw_path.is_symlink():
+                issues.append(VerificationIssue("error", raw_path.as_posix(), f"{field} is a symlink"))
+            path = raw_path.resolve()
+            if not raw_path.exists():
+                issues.append(VerificationIssue("error", raw_path.as_posix(), f"{field} is missing"))
                 continue
             if not is_relative_to(path, root):
                 issues.append(VerificationIssue("error", path.as_posix(), f"{field} is outside archive root"))

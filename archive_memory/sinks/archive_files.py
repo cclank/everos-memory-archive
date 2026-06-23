@@ -12,7 +12,15 @@ from archive_memory.manifest import Manifest
 from archive_memory.models import ImportResult, SourceItem
 from archive_memory.redactor import redact_text
 from archive_memory.renderer import render_record
-from archive_memory.utils import ensure_not_under, read_text_lossy, safe_fragment, slugify, utc_iso
+from archive_memory.utils import (
+    ensure_not_under,
+    ensure_safe_output_path,
+    read_text_lossy,
+    safe_fragment,
+    safe_write_text,
+    slugify,
+    utc_iso,
+)
 
 
 class ArchiveFileSink:
@@ -21,6 +29,7 @@ class ArchiveFileSink:
         self.keep_versions = keep_versions
         self.root = config.output_root.expanduser()
         ensure_not_under(self.root, config.protected_roots)
+        ensure_safe_output_path(config.manifest_path, self.root, config.protected_roots, context="manifest path")
         self.manifest = Manifest(config.manifest_path)
 
     def import_items(
@@ -51,25 +60,31 @@ class ArchiveFileSink:
         return self.snapshot_path(item).exists() and self.latest_snapshot_path(item).exists()
 
     def import_item(self, item: SourceItem) -> ImportResult:
-        classification = classify(item, self.config)
+        original = read_text_lossy(item.source_path)
+        redacted = redact_text(original)
+        classification = classify(item, self.config, text=redacted)
         imported_at = utc_iso()
         archive_id = self.archive_id(item)
         snapshot_path = self.snapshot_path(item)
         record_path = self.record_path(item, archive_id, classification)
 
         try:
-            ensure_not_under(snapshot_path, self.config.protected_roots)
-            ensure_not_under(record_path, self.config.protected_roots)
-
-            original = read_text_lossy(item.source_path)
-            redacted = redact_text(original)
-            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-            record_path.parent.mkdir(parents=True, exist_ok=True)
-            snapshot_path.write_text(redacted, encoding="utf-8")
+            safe_write_text(
+                snapshot_path,
+                redacted,
+                self.root,
+                self.config.protected_roots,
+                context="snapshot path",
+            )
             if self.keep_versions:
                 latest_path = self.latest_snapshot_path(item)
-                latest_path.parent.mkdir(parents=True, exist_ok=True)
-                latest_path.write_text(redacted, encoding="utf-8")
+                safe_write_text(
+                    latest_path,
+                    redacted,
+                    self.root,
+                    self.config.protected_roots,
+                    context="latest snapshot path",
+                )
 
             record = render_record(
                 archive_id=archive_id,
@@ -80,7 +95,13 @@ class ArchiveFileSink:
                 output_root=self.root,
                 imported_at=imported_at,
             )
-            record_path.write_text(record, encoding="utf-8")
+            safe_write_text(
+                record_path,
+                record,
+                self.root,
+                self.config.protected_roots,
+                context="record path",
+            )
             status = "imported"
             error = None
         except Exception as exc:  # noqa: BLE001 - persisted for import audit.
@@ -138,13 +159,13 @@ class ArchiveFileSink:
         extra: dict | None = None,
     ) -> Path:
         reports_dir = self.config.unified_root / "reports"
-        reports_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        path = reports_dir / f"{report_name}-{stamp}.json"
+        safe_report_name = slugify(report_name, "report")
+        path = reports_dir / f"{safe_report_name}-{stamp}.json"
         counts = Counter(result.status for result in results)
         payload = {
             "generated_at": utc_iso(),
-            "report_name": report_name,
+            "report_name": safe_report_name,
             "output_root": self.root.as_posix(),
             "unified_root": self.config.unified_root.as_posix(),
             "keep_versions": self.keep_versions,
@@ -165,7 +186,20 @@ class ArchiveFileSink:
         }
         if extra:
             payload.update(extra)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
+        safe_write_text(
+            path,
+            payload_text,
+            self.root,
+            self.config.protected_roots,
+            context="report path",
+        )
         latest = reports_dir / "latest.json"
-        latest.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+        safe_write_text(
+            latest,
+            payload_text,
+            self.root,
+            self.config.protected_roots,
+            context="latest report path",
+        )
         return path
