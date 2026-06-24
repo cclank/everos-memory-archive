@@ -19,16 +19,19 @@ from archive_memory.verify import verify_archive
 
 FAKE_OPENAI_KEY = "sk-" + "testsecretvalue123456789"
 FAKE_GITHUB_TOKEN = "gh" + "p_" + "abcdefghijklmnopqrstuvwxyz123456"
+FAKE_AWS_SECRET = "wJalrXUtnFEMI/" + "K7MDENG/bPxRfiCYzEXAMPLEKEY"
+FAKE_BEARER_TOKEN = "Bearer " + "abcdefghijklmnopqrstuvwxyz123456"
+FAKE_PASSWORD = "hunter" + "2"
 FAKE_PRIVATE_KEY_BEGIN = "-----BEGIN " + "PRIVATE KEY-----"
 FAKE_PRIVATE_KEY_END = "-----END " + "PRIVATE KEY-----"
 
 
 class ArchiveMemoryTests(unittest.TestCase):
     def test_redacts_secret_assignments_and_keys(self) -> None:
-        text = f"api_key = {FAKE_OPENAI_KEY}\npassword: hunter2\n"
+        text = f"api_key = {FAKE_OPENAI_KEY}\npassword: {FAKE_PASSWORD}\n"
         redacted = redact_text(text)
         self.assertIn("<redacted>", redacted)
-        self.assertNotIn("hunter2", redacted)
+        self.assertNotIn(FAKE_PASSWORD, redacted)
         self.assertEqual(find_secret_indicators(redacted), [])
 
     def test_redacts_common_secret_formats_and_metadata(self) -> None:
@@ -43,9 +46,9 @@ class ArchiveMemoryTests(unittest.TestCase):
                     [
                         f"api_key = {FAKE_OPENAI_KEY}",
                         f"GITHUB_TOKEN={FAKE_GITHUB_TOKEN}",
-                        "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY",
-                        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456",
-                        '{"password": "hunter2"}',
+                        f"AWS_SECRET_ACCESS_KEY={FAKE_AWS_SECRET}",
+                        f"Authorization: {FAKE_BEARER_TOKEN}",
+                        '{"password": "' + FAKE_PASSWORD + '"}',
                         FAKE_PRIVATE_KEY_BEGIN,
                         "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
                         FAKE_PRIVATE_KEY_END,
@@ -70,7 +73,7 @@ class ArchiveMemoryTests(unittest.TestCase):
             snapshot = result.snapshot_path.read_text(encoding="utf-8")
             self.assertNotIn(FAKE_OPENAI_KEY, record)
             self.assertNotIn(FAKE_GITHUB_TOKEN, snapshot)
-            self.assertNotIn("hunter2", record)
+            self.assertNotIn(FAKE_PASSWORD, record)
             self.assertNotIn("PRIVATE KEY-----", snapshot)
             self.assertEqual(find_secret_indicators(record), [])
             row = Manifest(config.manifest_path).get(result.archive_id)
