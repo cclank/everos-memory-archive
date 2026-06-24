@@ -17,10 +17,15 @@ from archive_memory.search import search_archive
 from archive_memory.sinks.archive_files import ArchiveFileSink
 from archive_memory.verify import verify_archive
 
+FAKE_OPENAI_KEY = "sk-" + "testsecretvalue123456789"
+FAKE_GITHUB_TOKEN = "gh" + "p_" + "abcdefghijklmnopqrstuvwxyz123456"
+FAKE_PRIVATE_KEY_BEGIN = "-----BEGIN " + "PRIVATE KEY-----"
+FAKE_PRIVATE_KEY_END = "-----END " + "PRIVATE KEY-----"
+
 
 class ArchiveMemoryTests(unittest.TestCase):
     def test_redacts_secret_assignments_and_keys(self) -> None:
-        text = "api_key = sk-testsecretvalue123456789\npassword: hunter2\n"
+        text = f"api_key = {FAKE_OPENAI_KEY}\npassword: hunter2\n"
         redacted = redact_text(text)
         self.assertIn("<redacted>", redacted)
         self.assertNotIn("hunter2", redacted)
@@ -36,14 +41,14 @@ class ArchiveMemoryTests(unittest.TestCase):
             source.write_text(
                 "\n".join(
                     [
-                        "api_key = sk-testsecretvalue123456789",
-                        "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz123456",
+                        f"api_key = {FAKE_OPENAI_KEY}",
+                        f"GITHUB_TOKEN={FAKE_GITHUB_TOKEN}",
                         "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY",
                         "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456",
                         '{"password": "hunter2"}',
-                        "-----BEGIN PRIVATE KEY-----",
+                        FAKE_PRIVATE_KEY_BEGIN,
                         "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
-                        "-----END PRIVATE KEY-----",
+                        FAKE_PRIVATE_KEY_END,
                     ]
                 ),
                 encoding="utf-8",
@@ -63,14 +68,14 @@ class ArchiveMemoryTests(unittest.TestCase):
             self.assertEqual(result.status, "imported", result.error)
             record = result.record_path.read_text(encoding="utf-8")
             snapshot = result.snapshot_path.read_text(encoding="utf-8")
-            self.assertNotIn("sk-testsecretvalue123456789", record)
-            self.assertNotIn("ghp_abcdefghijklmnopqrstuvwxyz123456", snapshot)
+            self.assertNotIn(FAKE_OPENAI_KEY, record)
+            self.assertNotIn(FAKE_GITHUB_TOKEN, snapshot)
             self.assertNotIn("hunter2", record)
             self.assertNotIn("PRIVATE KEY-----", snapshot)
             self.assertEqual(find_secret_indicators(record), [])
             row = Manifest(config.manifest_path).get(result.archive_id)
             self.assertIsNotNone(row)
-            self.assertNotIn("sk-testsecretvalue123456789", row["title"])
+            self.assertNotIn(FAKE_OPENAI_KEY, row["title"])
             self.assertTrue(verify_archive(config).ok)
 
     def test_config_parser(self) -> None:
@@ -388,6 +393,18 @@ codex = "codex"
             compiled.mkdir(parents=True)
             (compiled / "bootstrap_context.md").write_text("# Bootstrap\nUser prefers local code first.\n", encoding="utf-8")
             (compiled / "user_preferences.md").write_text("# Preferences\nUse Chinese answers.\n", encoding="utf-8")
+            env_file = root / "everos-local.env"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "EVEROS_LLM__BASE_URL=http://127.0.0.1:11434/v1",
+                        "EVEROS_MULTIMODAL__BASE_URL=http://127.0.0.1:11434/v1",
+                        "EVEROS_EMBEDDING__BASE_URL=http://127.0.0.1:8001/v1",
+                        "EVEROS_RERANK__BASE_URL=http://127.0.0.1:8002/v1",
+                    ]
+                ),
+                encoding="utf-8",
+            )
             config = ArchiveConfig(
                 claude_root=root / "claude",
                 codex_memory_root=root / "codex" / "memories",
@@ -409,11 +426,12 @@ codex = "codex"
                 everos_client.post_json = fake_post_json
                 result = import_memory_pack_to_everos(
                     config,
-                    base_url="http://everos.local",
+                    base_url="http://127.0.0.1:8000",
                     app_id="agent-memory-archive",
                     project_id="codex-claude-code",
                     user_id="tester",
                     session_id="session-1",
+                    everos_env_file=env_file,
                 )
             finally:
                 everos_client.post_json = original
@@ -426,6 +444,66 @@ codex = "codex"
             self.assertEqual(add_payload["session_id"], "session-1")
             self.assertEqual(add_payload["messages"][0]["sender_id"], "tester")
             self.assertIn("Imported Memory Pack File", add_payload["messages"][0]["content"])
+
+    def test_everos_import_rejects_remote_api_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "archive"
+            (archive / "compiled").mkdir(parents=True)
+            (archive / "compiled" / "bootstrap_context.md").write_text("# Bootstrap\n", encoding="utf-8")
+            env_file = root / "everos-local.env"
+            env_file.write_text("EVEROS_LLM__BASE_URL=http://127.0.0.1:11434/v1\n", encoding="utf-8")
+            config = ArchiveConfig(
+                claude_root=root / "claude",
+                codex_memory_root=root / "codex" / "memories",
+                repo_roots=(root / "repos",),
+                output_root=archive,
+                user_id="tester",
+                claude_agent_id="claude-code",
+                codex_agent_id="codex",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "non-local host"):
+                import_memory_pack_to_everos(
+                    config,
+                    base_url="https://everos.example.com",
+                    everos_env_file=env_file,
+                )
+
+    def test_everos_import_rejects_remote_model_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "archive"
+            (archive / "compiled").mkdir(parents=True)
+            (archive / "compiled" / "bootstrap_context.md").write_text("# Bootstrap\n", encoding="utf-8")
+            env_file = root / "everos-remote.env"
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "EVEROS_LLM__BASE_URL=https://openrouter.ai/api/v1",
+                        "EVEROS_MULTIMODAL__BASE_URL=http://127.0.0.1:11434/v1",
+                        "EVEROS_EMBEDDING__BASE_URL=http://127.0.0.1:8001/v1",
+                        "EVEROS_RERANK__BASE_URL=http://127.0.0.1:8002/v1",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            config = ArchiveConfig(
+                claude_root=root / "claude",
+                codex_memory_root=root / "codex" / "memories",
+                repo_roots=(root / "repos",),
+                output_root=archive,
+                user_id="tester",
+                claude_agent_id="claude-code",
+                codex_agent_id="codex",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "non-local host"):
+                import_memory_pack_to_everos(
+                    config,
+                    base_url="http://127.0.0.1:8000",
+                    everos_env_file=env_file,
+                )
 
 
 if __name__ == "__main__":

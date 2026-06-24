@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -63,6 +64,14 @@ def main(argv: list[str] | None = None) -> int:
     everos_p.add_argument("--session-id", help="EverOS session_id. Defaults to archive-import-<timestamp>.")
     everos_p.add_argument("--file", action="append", type=Path, dest="files", help="Compiled Markdown file to import.")
     everos_p.add_argument("--no-flush", action="store_true", help="Skip /api/v1/memory/flush after /add.")
+    everos_p.add_argument(
+        "--everos-env-file",
+        type=Path,
+        help=(
+            "EverOS dotenv file used to prove LLM / embedding / rerank "
+            "base URLs are local loopback endpoints."
+        ),
+    )
     everos_p.add_argument("--json", action="store_true")
 
     report_p = sub.add_parser("report", help="Show import report.")
@@ -336,16 +345,21 @@ def cmd_compile(args, config) -> int:
 
 
 def cmd_everos_import(args, config) -> int:
-    result = import_memory_pack_to_everos(
-        config,
-        base_url=args.base_url,
-        app_id=args.app_id,
-        project_id=args.project_id,
-        user_id=args.user_id,
-        session_id=args.session_id,
-        files=args.files,
-        flush=not args.no_flush,
-    )
+    try:
+        result = import_memory_pack_to_everos(
+            config,
+            base_url=args.base_url,
+            app_id=args.app_id,
+            project_id=args.project_id,
+            user_id=args.user_id,
+            session_id=args.session_id,
+            files=args.files,
+            flush=not args.no_flush,
+            everos_env_file=args.everos_env_file,
+        )
+    except RuntimeError as exc:
+        print(f"EverOS import refused: {exc}", file=sys.stderr)
+        return 1
     payload = {
         "base_url": result.base_url,
         "session_id": result.session_id,

@@ -32,14 +32,19 @@ everos-memory-archive backup
 If the user asks to use EverOS, import into EverOS, or make memories searchable through EverOS, run the EverOS handoff command instead:
 
 ```bash
-scripts/backup-to-everos.sh
+scripts/backup-to-everos.sh --everos-env-file /path/to/everos-local.env
 ```
 
-Prerequisite: EverOS server is already running locally, usually at:
+Prerequisites:
+
+- EverOS server is already running locally, usually at:
 
 ```text
 http://127.0.0.1:8000
 ```
+
+- EverOS is configured with local model endpoints only. Do not use OpenRouter, DeepInfra, OpenAI, Anthropic, or any other remote model provider for private memory imports.
+- Pass `--everos-env-file` or set `EVEROS_MEMORY_ARCHIVE_EVEROS_ENV_FILE` so the importer can verify the model endpoints are loopback URLs before sending Memory Pack contents.
 
 The handoff command first runs the local backup, then imports the compiled Memory Pack into EverOS through:
 
@@ -56,6 +61,8 @@ project_id=codex-claude-code
 ```
 
 If the server is not running, explain that local backup still succeeded or can be run independently, and ask the user whether to start/configure EverOS.
+
+If the importer refuses because it cannot prove the EverOS API or model endpoints are local, do not bypass the guard. Reconfigure EverOS to local loopback model endpoints first.
 
 ## What The Backup Does
 
@@ -79,6 +86,7 @@ The backup command performs:
 - Do not write into Claude Code or Codex source directories.
 - Do not copy archive outputs into the code repository.
 - Treat generated archives as sensitive local data unless the user explicitly reviews and shares them.
+- Keep private memory content local. Never send Memory Pack contents to remote LLM, embedding, rerank, or EverOS API endpoints.
 - After code changes, run tests and a real backup before reporting success.
 
 ## Verification Commands

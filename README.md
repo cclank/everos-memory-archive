@@ -5,10 +5,13 @@
 ![Status Alpha](https://img.shields.io/badge/status-alpha-F59E0B)
 ![Storage Markdown + SQLite](https://img.shields.io/badge/storage-Markdown%20%2B%20SQLite-4B5563)
 ![Read Only Sources](https://img.shields.io/badge/source%20mode-read--only-0F766E)
+![Local Only](https://img.shields.io/badge/privacy-local--only-111827)
 
 One-click local backup for Codex and Claude Code memories.
 
 `everos-memory-archive` collects local Codex and Claude Code memory files into a readable, deduplicated, traceable, EverOS-style archive. It keeps the original tools untouched, stores redacted Markdown snapshots, writes a SQLite manifest for incremental sync, and compiles a local Memory Pack that future agents can read.
+
+Privacy rule: private memory content must stay on this machine. The backup, compile, search, and verify commands are local and do not call remote APIs. The EverOS handoff is guarded so it only sends Memory Pack contents to a loopback EverOS server whose model endpoints are also configured as loopback URLs.
 
 ## Why This Exists
 
@@ -67,6 +70,8 @@ No runtime dependencies are required beyond Python 3.9+.
 
 The core backup flow is dependency-free, but the repository also includes a real EverOS handoff step.
 
+Important: use a local EverOS stack only. Do not point EverOS at OpenRouter, DeepInfra, OpenAI, Anthropic, or any other remote model provider for private memory imports. EverOS calls its configured LLM / embedding / rerank endpoints during `/add`, `/flush`, and vector search, so remote endpoints would receive memory content.
+
 Start EverOS separately:
 
 ```bash
@@ -75,12 +80,30 @@ everos init
 everos server start
 ```
 
-Follow EverOS' generated `.env` comments and fill the required LLM / embedding keys before starting the server. EverOS 1.x requires Python 3.12+.
+EverOS 1.x requires Python 3.12+. Configure its `.env` with local OpenAI-compatible endpoints, for example local Ollama / vLLM / llama.cpp-compatible services:
+
+```dotenv
+EVEROS_LLM__MODEL=local-chat
+EVEROS_LLM__API_KEY=local-placeholder
+EVEROS_LLM__BASE_URL=http://127.0.0.1:11434/v1
+
+EVEROS_MULTIMODAL__MODEL=local-vision
+EVEROS_MULTIMODAL__API_KEY=local-placeholder
+EVEROS_MULTIMODAL__BASE_URL=http://127.0.0.1:11434/v1
+
+EVEROS_EMBEDDING__MODEL=local-embedding
+EVEROS_EMBEDDING__API_KEY=local-placeholder
+EVEROS_EMBEDDING__BASE_URL=http://127.0.0.1:8001/v1
+
+EVEROS_RERANK__PROVIDER=vllm
+EVEROS_RERANK__MODEL=local-rerank
+EVEROS_RERANK__BASE_URL=http://127.0.0.1:8002/v1
+```
 
 Then run one command from this repo:
 
 ```bash
-scripts/backup-to-everos.sh
+scripts/backup-to-everos.sh --everos-env-file /path/to/everos-local.env
 ```
 
 That command runs the local backup first, then imports the compiled Memory Pack into the running EverOS server through:
@@ -104,15 +127,22 @@ You can pass EverOS options through the script:
 ```bash
 scripts/backup-to-everos.sh \
   --base-url http://127.0.0.1:8000 \
+  --everos-env-file /path/to/everos-local.env \
   --app-id agent-memory-archive \
   --project-id codex-claude-code \
   --user-id local-user
 ```
 
+The importer refuses to run when:
+
+- `--base-url` is not `localhost`, `127.0.0.1`, or `::1`.
+- EverOS model endpoint settings cannot be found in `--everos-env-file`, `EVEROS_MEMORY_ARCHIVE_EVEROS_ENV_FILE`, inherited environment variables, or EverOS' standard dotenv locations.
+- Any configured `EVEROS_*__BASE_URL` model endpoint points to a non-local host.
+
 To import an already compiled Memory Pack without re-running backup:
 
 ```bash
-scripts/import-memory-pack-to-everos.sh
+scripts/import-memory-pack-to-everos.sh --everos-env-file /path/to/everos-local.env
 ```
 
 After import, query EverOS directly:
@@ -130,6 +160,44 @@ curl -X POST http://127.0.0.1:8000/api/v1/memory/search \
 ```
 
 This is the point where EverOS becomes the retrieval backend. The local archive still owns collection, redaction, snapshots, and provenance; EverOS owns memory extraction, Markdown-backed memory storage, indexing, and `/search`.
+
+## Verified Local Behavior
+
+The implementation is tested around the privacy boundary, not just the happy-path backup command.
+
+Validated invariants:
+
+- `backup`, `compile`, `search`, and `verify` run locally and do not call remote APIs.
+- Codex and Claude Code memory roots are opened read-only.
+- Archive writes stay under `~/.everos/agent_memory_archive` unless a custom `output_root` is configured.
+- Source snapshots and records are redacted before they are written.
+- Incremental state is tracked through the SQLite manifest with `source_path + sha256`.
+- `everos-import` refuses non-loopback EverOS API URLs before posting Memory Pack content.
+- `everos-import` also refuses EverOS configurations whose LLM, multimodal, embedding, or rerank endpoint points to a non-local host.
+- A local EverOS server can ingest the compiled Memory Pack and answer `/api/v1/memory/search` queries when its own model endpoints are also local.
+
+The core validation commands are:
+
+```bash
+python3 -m compileall archive_memory tests
+python3 -m unittest discover -s tests -v
+python3 -m archive_memory backup
+python3 -m archive_memory verify
+```
+
+Remote EverOS handoff should fail closed:
+
+```bash
+python3 -m archive_memory everos-import \
+  --base-url https://api.example.com \
+  --everos-env-file /tmp/does-not-matter.env
+```
+
+Expected result:
+
+```text
+EverOS import refused: EverOS API points to non-local host ...
+```
 
 ## Codex Skill
 
@@ -249,14 +317,14 @@ The current compiler is deterministic and local. It does not call an LLM or remo
 # One-click default.
 scripts/backup-agent-memories.sh
 
-# One-click backup plus EverOS import. Requires a running EverOS server.
-scripts/backup-to-everos.sh
+# One-click backup plus EverOS import. Requires local EverOS + local model endpoints.
+scripts/backup-to-everos.sh --everos-env-file /path/to/everos-local.env
 
 # Same flow through the installed CLI.
 everos-memory-archive backup
 
 # Import compiled Memory Pack into EverOS without re-running backup.
-everos-memory-archive everos-import
+everos-memory-archive everos-import --everos-env-file /path/to/everos-local.env
 
 # Preview source files without writing.
 everos-memory-archive scan --dry-run
@@ -361,6 +429,8 @@ The test suite includes regression coverage for:
 - source symlink escape prevention
 - output symlink overwrite prevention
 - manifest path trust in `search` and `compile`
+- local-only EverOS API and model endpoint guards
+- CLI-friendly EverOS import refusal errors
 - one-click `backup`
 
 ## License

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import ipaddress
 import json
+import os
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from archive_memory.config import ArchiveConfig
 from archive_memory.utils import read_text_lossy, slugify
@@ -19,6 +22,13 @@ DEFAULT_COMPILED_FILES = (
     "memory_map.md",
     "recent_changes.md",
     "conflicts.md",
+)
+
+EVEROS_MODEL_BASE_URL_KEYS = (
+    "EVEROS_LLM__BASE_URL",
+    "EVEROS_MULTIMODAL__BASE_URL",
+    "EVEROS_EMBEDDING__BASE_URL",
+    "EVEROS_RERANK__BASE_URL",
 )
 
 
@@ -44,7 +54,11 @@ def import_memory_pack_to_everos(
     session_id: str | None = None,
     files: list[Path] | None = None,
     flush: bool = True,
+    everos_env_file: Path | None = None,
 ) -> EverOSImportResult:
+    require_loopback_url(base_url, label="EverOS API")
+    require_local_everos_model_endpoints(everos_env_file)
+
     compiled_dir = config.output_root / "compiled"
     selected = files or [compiled_dir / name for name in DEFAULT_COMPILED_FILES]
     existing = [path for path in selected if path.exists()]
@@ -129,3 +143,107 @@ def post_json(base_url: str, path: str, payload: dict) -> dict:
         raise RuntimeError(f"EverOS request failed: {exc.code} {url}: {body}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"cannot reach EverOS server at {base_url}: {exc}") from exc
+
+
+def require_local_everos_model_endpoints(env_file: Path | None = None) -> None:
+    """Fail unless EverOS model endpoints are provably local.
+
+    The importer posts private Memory Pack contents into EverOS. During
+    ``/add`` or ``/flush``, EverOS may call its configured LLM, embedding,
+    and rerank endpoints with that content. A loopback EverOS API is not
+    enough: the model endpoints must also be loopback URLs.
+    """
+    values = _load_everos_endpoint_env(env_file)
+    missing = [key for key in EVEROS_MODEL_BASE_URL_KEYS if not values.get(key)]
+    if missing:
+        hint = (
+            "pass --everos-env-file /path/to/everos-local.env or export "
+            + ", ".join(EVEROS_MODEL_BASE_URL_KEYS)
+        )
+        raise RuntimeError(
+            "cannot prove EverOS model endpoints are local; refusing to import "
+            f"private Memory Pack contents (missing: {', '.join(missing)}; {hint})"
+        )
+    for key in EVEROS_MODEL_BASE_URL_KEYS:
+        require_loopback_url(values[key], label=key)
+
+
+def _load_everos_endpoint_env(env_file: Path | None) -> dict[str, str]:
+    values: dict[str, str] = {}
+    resolved = _resolve_env_file(env_file)
+    if resolved is not None:
+        values.update(_read_dotenv(resolved))
+    for key in EVEROS_MODEL_BASE_URL_KEYS:
+        if os.environ.get(key):
+            values[key] = os.environ[key]
+    return values
+
+
+def _resolve_env_file(env_file: Path | None) -> Path | None:
+    candidates: list[Path] = []
+    if env_file is not None:
+        candidates.append(env_file.expanduser())
+    elif os.environ.get("EVEROS_MEMORY_ARCHIVE_EVEROS_ENV_FILE"):
+        candidates.append(Path(os.environ["EVEROS_MEMORY_ARCHIVE_EVEROS_ENV_FILE"]).expanduser())
+    else:
+        xdg_home = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
+        candidates.extend(
+            [
+                Path.cwd() / ".env",
+                xdg_home / "everos" / ".env",
+                Path("~/.everos/.env").expanduser(),
+            ]
+        )
+
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _read_dotenv(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key not in EVEROS_MODEL_BASE_URL_KEYS:
+            continue
+        values[key] = _strip_env_value(value)
+    return values
+
+
+def _strip_env_value(value: str) -> str:
+    value = value.strip()
+    if " #" in value:
+        value = value.split(" #", 1)[0].rstrip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        value = value[1:-1]
+    return value
+
+
+def require_loopback_url(url: str, *, label: str) -> None:
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if parsed.scheme not in {"http", "https"} or not host:
+        raise RuntimeError(f"{label} must be an http(s) loopback URL")
+    if _is_loopback_host(host):
+        return
+    raise RuntimeError(
+        f"{label} points to non-local host {host!r}; refusing to send private memory contents"
+    )
+
+
+def _is_loopback_host(host: str) -> bool:
+    lowered = host.lower()
+    if lowered == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(lowered).is_loopback
+    except ValueError:
+        return False
