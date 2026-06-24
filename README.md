@@ -172,8 +172,7 @@ Validated invariants:
 - Archive writes stay under `~/.everos/agent_memory_archive` unless a custom `output_root` is configured.
 - Source snapshots and records are redacted before they are written.
 - Incremental state is tracked through the SQLite manifest with `source_path + sha256`.
-- `everos-import` refuses non-loopback EverOS API URLs before posting Memory Pack content.
-- `everos-import` also refuses EverOS configurations whose LLM, multimodal, embedding, or rerank endpoint points to a non-local host.
+- `everos-import` checks that the EverOS API and configured model endpoints are local before posting Memory Pack content.
 - A local EverOS server can ingest the compiled Memory Pack and answer `/api/v1/memory/search` queries when its own model endpoints are also local.
 
 The core validation commands are:
@@ -183,20 +182,6 @@ python3 -m compileall archive_memory tests
 python3 -m unittest discover -s tests -v
 python3 -m archive_memory backup
 python3 -m archive_memory verify
-```
-
-Remote EverOS handoff should fail closed:
-
-```bash
-python3 -m archive_memory everos-import \
-  --base-url https://api.example.com \
-  --everos-env-file /tmp/does-not-matter.env
-```
-
-Expected result:
-
-```text
-EverOS import refused: EverOS API points to non-local host ...
 ```
 
 ## Codex Skill
