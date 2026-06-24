@@ -55,13 +55,20 @@ Archive root: ~/.everos/agent_memory_archive
 
 ## Install
 
-For local development:
+For normal local use:
 
 ```bash
 git clone <your-fork-or-repo-url>
 cd everos-memory-archive
-python3 -m pip install -e .
+python3 -m pip install .
 everos-memory-archive backup
+```
+
+For editable development installs, use a modern pip first:
+
+```bash
+python3 -m pip install --upgrade pip
+python3 -m pip install -e .
 ```
 
 No runtime dependencies are required beyond Python 3.9+.
@@ -362,6 +369,12 @@ Use it with:
 
 ```bash
 everos-memory-archive --config configs/local.toml backup
+```
+
+The shell scripts also accept `--config` and resolve relative config paths from the directory where you run the script:
+
+```bash
+/path/to/everos-memory-archive/scripts/backup-agent-memories.sh --config configs/local.toml
 ```
 
 ## Incremental Sync

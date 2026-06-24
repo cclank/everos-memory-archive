@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from archive_memory.cli import main as cli_main
@@ -387,6 +393,94 @@ codex = "codex"
             self.assertEqual(code, 0)
             self.assertTrue((archive / "compiled" / "bootstrap_context.md").exists())
             self.assertTrue(verify_archive(load_config(config_path)).ok)
+
+    def test_backup_to_everos_script_accepts_relative_config_from_any_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runner = root / "runner"
+            codex = root / "codex" / "memories"
+            archive = root / "archive"
+            runner.mkdir()
+            codex.mkdir(parents=True)
+            (codex / "memory_summary.md").write_text("User prefers local script tests.\n", encoding="utf-8")
+            (runner / "local.toml").write_text(
+                f"""
+[sources]
+claude_code_root = "{root / 'claude'}"
+codex_memory_root = "{codex}"
+repo_roots = ["{root / 'repos'}"]
+
+[everos]
+output_root = "{archive}"
+user_id = "tester"
+
+[everos.agents]
+claude_code = "claude-code"
+codex = "codex"
+""",
+                encoding="utf-8",
+            )
+            (runner / "everos-local.env").write_text(
+                "\n".join(
+                    [
+                        "EVEROS_LLM__BASE_URL=http://127.0.0.1:11434/v1",
+                        "EVEROS_MULTIMODAL__BASE_URL=http://127.0.0.1:11434/v1",
+                        "EVEROS_EMBEDDING__BASE_URL=http://127.0.0.1:8001/v1",
+                        "EVEROS_RERANK__BASE_URL=http://127.0.0.1:8002/v1",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            requests: list[tuple[str, dict]] = []
+
+            class Handler(BaseHTTPRequestHandler):
+                def do_POST(self) -> None:  # noqa: N802
+                    length = int(self.headers.get("Content-Length", "0"))
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    requests.append((self.path, payload))
+                    status = "accumulated" if self.path.endswith("/add") else "extracted"
+                    body = json.dumps({"request_id": "test", "data": {"status": status}}).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, format: str, *args) -> None:  # noqa: A002
+                    return
+
+            server = HTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                repo_root = Path(__file__).resolve().parents[1]
+                script = repo_root / "scripts" / "backup-to-everos.sh"
+                completed = subprocess.run(
+                    [
+                        str(script),
+                        "--config=local.toml",
+                        "--base-url",
+                        f"http://127.0.0.1:{server.server_port}",
+                        "--everos-env-file=everos-local.env",
+                        "--user-id",
+                        "tester",
+                    ],
+                    cwd=runner,
+                    env={**os.environ, "PYTHON": sys.executable},
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertTrue((archive / "compiled" / "bootstrap_context.md").exists())
+            self.assertEqual([path for path, _ in requests], ["/api/v1/memory/add", "/api/v1/memory/flush"])
+            self.assertEqual(requests[0][1]["messages"][0]["sender_id"], "tester")
 
     def test_everos_import_posts_memory_pack_and_flushes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
