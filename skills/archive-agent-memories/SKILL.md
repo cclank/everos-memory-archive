@@ -27,6 +27,36 @@ If the current working directory is not the repository root, locate the checkout
 everos-memory-archive backup
 ```
 
+## EverOS Handoff
+
+If the user asks to use EverOS, import into EverOS, or make memories searchable through EverOS, run the EverOS handoff command instead:
+
+```bash
+scripts/backup-to-everos.sh
+```
+
+Prerequisite: EverOS server is already running locally, usually at:
+
+```text
+http://127.0.0.1:8000
+```
+
+The handoff command first runs the local backup, then imports the compiled Memory Pack into EverOS through:
+
+```text
+POST /api/v1/memory/add
+POST /api/v1/memory/flush
+```
+
+Default EverOS scope:
+
+```text
+app_id=agent-memory-archive
+project_id=codex-claude-code
+```
+
+If the server is not running, explain that local backup still succeeded or can be run independently, and ask the user whether to start/configure EverOS.
+
 ## What The Backup Does
 
 The backup command performs:

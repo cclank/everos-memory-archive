@@ -8,6 +8,8 @@ from pathlib import Path
 from archive_memory.cli import main as cli_main
 from archive_memory.compiler import compile_archive
 from archive_memory.config import ArchiveConfig, load_config
+from archive_memory import everos_client
+from archive_memory.everos_client import import_memory_pack_to_everos
 from archive_memory.manifest import Manifest
 from archive_memory.redactor import find_secret_indicators, redact_text
 from archive_memory.scanner import scan
@@ -377,6 +379,53 @@ codex = "codex"
             self.assertEqual(code, 0)
             self.assertTrue((archive / "compiled" / "bootstrap_context.md").exists())
             self.assertTrue(verify_archive(load_config(config_path)).ok)
+
+    def test_everos_import_posts_memory_pack_and_flushes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "archive"
+            compiled = archive / "compiled"
+            compiled.mkdir(parents=True)
+            (compiled / "bootstrap_context.md").write_text("# Bootstrap\nUser prefers local code first.\n", encoding="utf-8")
+            (compiled / "user_preferences.md").write_text("# Preferences\nUse Chinese answers.\n", encoding="utf-8")
+            config = ArchiveConfig(
+                claude_root=root / "claude",
+                codex_memory_root=root / "codex" / "memories",
+                repo_roots=(root / "repos",),
+                output_root=archive,
+                user_id="tester",
+                claude_agent_id="claude-code",
+                codex_agent_id="codex",
+            )
+            calls: list[tuple[str, str, dict]] = []
+            original = everos_client.post_json
+
+            def fake_post_json(base_url: str, path: str, payload: dict) -> dict:
+                calls.append((base_url, path, payload))
+                status = "accumulated" if path.endswith("/add") else "extracted"
+                return {"request_id": "test", "data": {"status": status}}
+
+            try:
+                everos_client.post_json = fake_post_json
+                result = import_memory_pack_to_everos(
+                    config,
+                    base_url="http://everos.local",
+                    app_id="agent-memory-archive",
+                    project_id="codex-claude-code",
+                    user_id="tester",
+                    session_id="session-1",
+                )
+            finally:
+                everos_client.post_json = original
+
+            self.assertEqual(result.message_count, 2)
+            self.assertEqual(result.add_status, "accumulated")
+            self.assertEqual(result.flush_status, "extracted")
+            self.assertEqual([call[1] for call in calls], ["/api/v1/memory/add", "/api/v1/memory/flush"])
+            add_payload = calls[0][2]
+            self.assertEqual(add_payload["session_id"], "session-1")
+            self.assertEqual(add_payload["messages"][0]["sender_id"], "tester")
+            self.assertIn("Imported Memory Pack File", add_payload["messages"][0]["content"])
 
 
 if __name__ == "__main__":

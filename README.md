@@ -63,6 +63,74 @@ everos-memory-archive backup
 
 No runtime dependencies are required beyond Python 3.9+.
 
+## Use With EverOS
+
+The core backup flow is dependency-free, but the repository also includes a real EverOS handoff step.
+
+Start EverOS separately:
+
+```bash
+pip install everos
+everos init
+everos server start
+```
+
+Follow EverOS' generated `.env` comments and fill the required LLM / embedding keys before starting the server. EverOS 1.x requires Python 3.12+.
+
+Then run one command from this repo:
+
+```bash
+scripts/backup-to-everos.sh
+```
+
+That command runs the local backup first, then imports the compiled Memory Pack into the running EverOS server through:
+
+```text
+POST /api/v1/memory/add
+POST /api/v1/memory/flush
+```
+
+Default EverOS scope:
+
+```text
+base_url   = http://127.0.0.1:8000
+app_id     = agent-memory-archive
+project_id = codex-claude-code
+user_id    = <local user>
+```
+
+You can pass EverOS options through the script:
+
+```bash
+scripts/backup-to-everos.sh \
+  --base-url http://127.0.0.1:8000 \
+  --app-id agent-memory-archive \
+  --project-id codex-claude-code \
+  --user-id local-user
+```
+
+To import an already compiled Memory Pack without re-running backup:
+
+```bash
+scripts/import-memory-pack-to-everos.sh
+```
+
+After import, query EverOS directly:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/memory/search \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "user_id": "local-user",
+    "app_id": "agent-memory-archive",
+    "project_id": "codex-claude-code",
+    "query": "What are my Codex and Claude Code working preferences?",
+    "top_k": 5
+  }'
+```
+
+This is the point where EverOS becomes the retrieval backend. The local archive still owns collection, redaction, snapshots, and provenance; EverOS owns memory extraction, Markdown-backed memory storage, indexing, and `/search`.
+
 ## Codex Skill
 
 If you use Codex, pair this repo with a local skill and trigger it in one sentence:
@@ -181,8 +249,14 @@ The current compiler is deterministic and local. It does not call an LLM or remo
 # One-click default.
 scripts/backup-agent-memories.sh
 
+# One-click backup plus EverOS import. Requires a running EverOS server.
+scripts/backup-to-everos.sh
+
 # Same flow through the installed CLI.
 everos-memory-archive backup
+
+# Import compiled Memory Pack into EverOS without re-running backup.
+everos-memory-archive everos-import
 
 # Preview source files without writing.
 everos-memory-archive scan --dry-run

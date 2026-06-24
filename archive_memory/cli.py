@@ -7,6 +7,7 @@ from pathlib import Path
 
 from archive_memory.compiler import compile_archive
 from archive_memory.config import load_config
+from archive_memory.everos_client import import_memory_pack_to_everos
 from archive_memory.manifest import Manifest
 from archive_memory.models import SourceItem
 from archive_memory.scanner import parse_sources, scan
@@ -54,6 +55,16 @@ def main(argv: list[str] | None = None) -> int:
     compile_p.add_argument("--bootstrap-limit", type=int, default=24, help="Maximum candidates in bootstrap context.")
     compile_p.add_argument("--json", action="store_true")
 
+    everos_p = sub.add_parser("everos-import", help="Import the compiled Memory Pack into a running EverOS server.")
+    everos_p.add_argument("--base-url", default="http://127.0.0.1:8000", help="EverOS server base URL.")
+    everos_p.add_argument("--app-id", default="agent-memory-archive", help="EverOS app_id scope.")
+    everos_p.add_argument("--project-id", default="codex-claude-code", help="EverOS project_id scope.")
+    everos_p.add_argument("--user-id", help="EverOS user_id / sender_id. Defaults to config user_id.")
+    everos_p.add_argument("--session-id", help="EverOS session_id. Defaults to archive-import-<timestamp>.")
+    everos_p.add_argument("--file", action="append", type=Path, dest="files", help="Compiled Markdown file to import.")
+    everos_p.add_argument("--no-flush", action="store_true", help="Skip /api/v1/memory/flush after /add.")
+    everos_p.add_argument("--json", action="store_true")
+
     report_p = sub.add_parser("report", help="Show import report.")
     report_p.add_argument("--latest", action="store_true", help="Show latest manifest counts and rows.")
 
@@ -90,6 +101,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_backup(args, config)
     if args.command == "compile":
         return cmd_compile(args, config)
+    if args.command == "everos-import":
+        return cmd_everos_import(args, config)
     if args.command == "report":
         return cmd_report(args, config)
     if args.command == "show":
@@ -319,6 +332,42 @@ def cmd_compile(args, config) -> int:
         print(f"Output: {result.output_dir}")
         for path in result.files:
             print(f"  {path.name}")
+    return 0
+
+
+def cmd_everos_import(args, config) -> int:
+    result = import_memory_pack_to_everos(
+        config,
+        base_url=args.base_url,
+        app_id=args.app_id,
+        project_id=args.project_id,
+        user_id=args.user_id,
+        session_id=args.session_id,
+        files=args.files,
+        flush=not args.no_flush,
+    )
+    payload = {
+        "base_url": result.base_url,
+        "session_id": result.session_id,
+        "app_id": result.app_id,
+        "project_id": result.project_id,
+        "user_id": result.user_id,
+        "message_count": result.message_count,
+        "add_status": result.add_status,
+        "flush_status": result.flush_status,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print("Imported Memory Pack into EverOS.")
+        print(f"EverOS: {result.base_url}")
+        print(f"Session: {result.session_id}")
+        print(f"Scope: app_id={result.app_id} project_id={result.project_id}")
+        print(f"User: {result.user_id}")
+        print(f"Messages: {result.message_count}")
+        print(f"Add status: {result.add_status}")
+        if result.flush_status is not None:
+            print(f"Flush status: {result.flush_status}")
     return 0
 
 
